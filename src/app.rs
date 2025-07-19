@@ -49,42 +49,26 @@ pub struct App {
     runit_to_world_multiplier: f32,
     images: HashMap<ImageID, Image>,
     chess_layout: ChessLayout,
+    /// ERM TODO I FORGOR IF THIS IS ROT UNITS OR PX UNITS. DOUBLE CHECK ON ME WHERE IM INSTANTIATED.
     mouse_pos: (f32, f32),
 }
 
 /// Misc utility functions
 impl App {
     pub fn new(ctx: &mut Context) -> Self {
-        Self {
+        let mut s = Self {
             chess: RotchessEmulator::with(Pieces::standard_board()),
             runit_to_world_multiplier: 0.,
             images: Self::load_images(ctx),
             chess_layout: ChessLayout::Standard,
             mouse_pos: (0., 0.),
-        }
+        };
+
+        s.update_runit_to_world_multiplier(STARTING_WINDOW_SIZE, STARTING_WINDOW_SIZE);
+
+        s
     }
 
-    fn update_runit_to_world_multiplier(&mut self, screen_width: f32, screen_height: f32) {
-        self.runit_to_world_multiplier = f32::min(screen_width, screen_height) / 8.;
-    }
-
-    /// Converts from a rotchess unit to world unit (pixel).
-    ///
-    /// Must be run after we update the ratio after any screen resize, lest the value be outdated.
-    fn cnv_r(&self, a: f32) -> f32 {
-        a * self.runit_to_world_multiplier
-    }
-
-    /// Converts from a world unit (pixel) to rotchess unit.
-    ///
-    /// Must be run after we update the ratio after any screen resize, lest the value be outdated.
-    fn cnv_w(&self, a: f32) -> f32 {
-        a / self.runit_to_world_multiplier
-    }
-}
-
-/// Helper functions for drawing
-impl App {
     fn load_images(ctx: &mut Context) -> HashMap<ImageID, Image> {
         const IMAGE_PATHS: [&str; 12] = [
             "piece_bishopB1.png",
@@ -111,7 +95,7 @@ impl App {
                     .to_str()
                     .expect("Hardcoded utf8 file names should convert to str.")
                     .to_string(),
-                Image::from_path(ctx, image_dir.join(path))
+                Image::from_path(ctx, Path::new("/").join(image_dir.join(path)))
                     .expect("Hardcoded file names/dir should yield a correct path."),
             );
         }
@@ -119,11 +103,32 @@ impl App {
         images
     }
 
+    fn update_runit_to_world_multiplier(&mut self, screen_width: f32, screen_height: f32) {
+        self.runit_to_world_multiplier = f32::min(screen_width, screen_height) / 8.;
+    }
+
+    /// Converts from a rotchess unit to world unit (pixel).
+    ///
+    /// Must be run after we update the ratio after any screen resize, lest the value be outdated.
+    fn cnv_r(&self, a: f32) -> f32 {
+        a * self.runit_to_world_multiplier
+    }
+
+    /// Converts from a world unit (pixel) to rotchess unit.
+    ///
+    /// Must be run after we update the ratio after any screen resize, lest the value be outdated.
+    fn cnv_w(&self, a: f32) -> f32 {
+        a / self.runit_to_world_multiplier
+    }
+}
+
+/// Helper functions for drawing
+impl App {
     fn draw_board(&self, (ctx, canvas): (&mut Context, &mut Canvas)) -> GameResult {
         let mut mb = MeshBuilder::new();
         mb.rectangle(
             DrawMode::fill(),
-            Rect::new_i32(0, 0, 8, 8),
+            Rect::new(0., 0., self.cnv_r(8.), self.cnv_r(8.)),
             LIGHT_TILE_COLOR,
         )?;
 
@@ -137,7 +142,12 @@ impl App {
         for _ in 0..NUM_DARK_TILES {
             mb.rectangle(
                 DrawMode::fill(),
-                Rect::new_i32(left, top, 1, 1),
+                Rect::new(
+                    self.cnv_r(left as f32),
+                    self.cnv_r(top as f32),
+                    self.cnv_r(1.),
+                    self.cnv_r(1.),
+                ),
                 DARK_TILE_COLOR,
             )?;
 
@@ -236,19 +246,16 @@ impl App {
         let dist = self.cnv_r(0.12);
 
         canvas.draw(
-            // TODO: this func wants the points ordered clockwise, but which way that is depends if we go
-            // off math (y up) or our eyes (y down)
-            &Mesh::new_polygon(
+            &Mesh::from_triangles(
                 ctx,
-                DrawMode::fill(),
                 &[
-                    Vec2::new(0., -dist),
-                    Vec2::new(x - dist / 2. * f32::sqrt(3.), dist / 2.),
+                    Vec2::new(x, y - dist),
+                    Vec2::new(x - dist / 2. * f32::sqrt(3.), y + dist / 2.),
                     Vec2::new(x + dist / 2. * f32::sqrt(3.), y + dist / 2.),
                 ],
                 CAPTURE_HIGHLIGHT_COLOR,
             )?,
-            Vec2::new(self.cnv_r(x), self.cnv_r(y)),
+            DrawParam::new(),
         );
         Ok(())
     }
@@ -258,8 +265,7 @@ impl App {
         (ctx, canvas): (&mut Context, &mut Canvas),
         show_hitcircles: bool,
     ) -> GameResult {
-        /// Size as fraction of 1.
-        const PIECE_SIZE: f32 = 0.9;
+        let tile_size_px = self.runit_to_world_multiplier; // I did the math.
         for piece in self.chess.pieces() {
             canvas.draw(
                 self.images
@@ -271,12 +277,13 @@ impl App {
                     .expect("Pieces should have correctly mapped to the file descrs."),
                 DrawParam::new()
                     .dest_rect(Rect {
-                        x: self.cnv_r(piece.x() - PIECE_SIZE / 2.),
-                        y: self.cnv_r(piece.y() - PIECE_SIZE / 2.),
-                        w: self.cnv_r(piece.x() - PIECE_SIZE / 2.),
-                        h: self.cnv_r(piece.y() - PIECE_SIZE / 2.),
+                        x: self.cnv_r(piece.x()),                   // x
+                        y: self.cnv_r(piece.y()),                   // y
+                        w: tile_size_px / PIECE_PNG_SIZE_PX as f32, // scale x multiplier
+                        h: tile_size_px / PIECE_PNG_SIZE_PX as f32, // scale y multiplier
+                                                                    // again, I did the math.
                     })
-                    // .offset(Vec2::new(0.5, 0.5))
+                    .offset(Vec2::new(0.5, 0.5))
                     .rotation(TAU - piece.angle()),
             );
 
@@ -338,12 +345,12 @@ impl EventHandler for App {
         x: f32,
         y: f32,
     ) -> GameResult {
-        let button = match button {
+        if let Some(button) = match button {
             ggez::winit::event::MouseButton::Left => Some(emulator::MouseButton::LEFT),
             ggez::winit::event::MouseButton::Right => Some(emulator::MouseButton::RIGHT),
             _ => None,
-        };
-        if let Some(button) = button {
+        } {
+            let (x, y) = (self.cnv_w(x), self.cnv_w(y));
             self.chess.handle_event(Event::ButtonDown { x, y, button });
         }
         Ok(())
@@ -356,12 +363,12 @@ impl EventHandler for App {
         x: f32,
         y: f32,
     ) -> GameResult {
-        let button = match button {
+        if let Some(button) = match button {
             ggez::winit::event::MouseButton::Left => Some(emulator::MouseButton::LEFT),
             ggez::winit::event::MouseButton::Right => Some(emulator::MouseButton::RIGHT),
             _ => None,
-        };
-        if let Some(button) = button {
+        } {
+            let (x, y) = (self.cnv_w(x), self.cnv_w(y));
             self.chess.handle_event(Event::ButtonUp { x, y, button });
         }
         Ok(())
@@ -375,6 +382,7 @@ impl EventHandler for App {
         _dx: f32,
         _dy: f32,
     ) -> GameResult {
+        let (x, y) = (self.cnv_w(x), self.cnv_w(y));
         self.mouse_pos = (x, y);
         self.chess.handle_event(Event::MouseMotion { x, y });
         Ok(())
