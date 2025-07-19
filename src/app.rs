@@ -1,10 +1,6 @@
 //! An app that lets users play and see (update/draw) chess, computed with help from [`rotchess_core`] and macroquad.
 
-use std::{
-    collections::HashMap,
-    f32::consts::{PI, TAU},
-    path::Path,
-};
+use std::{collections::HashMap, f32::consts::TAU, path::Path};
 
 use ggez::{
     Context, GameError, GameResult,
@@ -106,6 +102,7 @@ impl ChessLayout {
 /// See [`App::load_images`], where they are canonically generated.
 type ImageID = String;
 
+#[derive(PartialEq, Eq)]
 enum TurnPhase {
     Move,
     Rotate,
@@ -205,36 +202,61 @@ impl App {
     /// Sends an event to our inner chess emulator, unless it is not our turn.
     ///
     /// If a thing happened under the hood, send it to the other player.
+    /// If we did an illegal turn phase action, revert it.
     fn try_send_event(&mut self, e: Event) {
         if self.netcode.my_turn()
             && let Some(thing_happened) = self.chess.handle_event(e)
         {
             match thing_happened {
-                // if we rotated, use a quick little (evil) hack to deselect the piece
+                ThingHappened::Move(_, _, _) => {
+                    if let TurnPhase::Rotate = self.turn_phase {
+                        // disallow move on rotation phase
+                        println!(
+                            "Player turns consist of a move and a rotation in that order.
+                             No moving in your rotation phase!"
+                        );
+                        self.chess.handle_event(Event::PrevTurn);
+                        return;
+                    }
+                    self.turn_phase = TurnPhase::Rotate;
+                }
+                // if we rotated, use a little (evil) hack to deselect the piece
                 // that we're rotating. I, the dev of rotchess-core, know right button
                 // down can only select. so, we send a select click to narnia (-1000,-1000)
                 // Nothing should be selectable there, so we deselect.
-                ThingHappened::Rotate(_, _) => assert!(
-                    self.chess
-                        .handle_event(Event::ButtonDown {
-                            x: -1000.,
-                            y: -1000.,
-                            button: emulator::MouseButton::RIGHT,
-                        })
-                        .is_none(),
-                    "Nothing should have happened as detectable by the NothingHappened enum.",
-                ),
-
+                ThingHappened::Rotate(_, _) => {
+                    if let TurnPhase::Move = self.turn_phase {
+                        // disallow rotation on move phase
+                        println!(
+                            "Player turns consist of a move and a rotation in that order.
+                             No rotating in your move phase!"
+                        );
+                        self.chess.handle_event(Event::PrevTurn);
+                        return;
+                    }
+                    debug_assert!(
+                        self.chess
+                            .handle_event(Event::ButtonDown {
+                                x: -1000.,
+                                y: -1000.,
+                                button: emulator::MouseButton::RIGHT,
+                            })
+                            .is_none(),
+                        "Nothing should have happened as detectable by the NothingHappened enum.",
+                    );
+                    self.turn_phase = TurnPhase::Wait;
+                }
                 _ => (),
             };
-            self.netcode.send_turn(&Self::ser_thing(&thing_happened));
+            self.netcode
+                .send_turn(&Self::ser_thing(Some(&thing_happened)));
         }
     }
 
     // yes, we're doing these manually. huzzah!
 
     /// Serialize a Thing into a netcode byte buffer turn.
-    fn ser_thing(thing: &ThingHappened) -> [u8; TURN_SIZE] {
+    fn ser_thing(thing: Option<&ThingHappened>) -> [u8; TURN_SIZE] {
         // we really don't need to have
         // a usize be the piece index, we don't have enough pieces on
         // the board. a single u8 is enough. but for type convenience,
@@ -244,32 +266,33 @@ impl App {
         // stack?)
         let mut ans = [0; TURN_SIZE];
         match thing {
-            ThingHappened::FirstTurn => ans[0] = 1,
-            ThingHappened::PrevTurn => ans[0] = 2,
-            ThingHappened::NextTurn => ans[0] = 3,
-            ThingHappened::LastTurn => ans[0] = 4,
-            ThingHappened::Rotate(piece_idx, r) => {
+            Some(ThingHappened::FirstTurn) => ans[0] = 1,
+            Some(ThingHappened::PrevTurn) => ans[0] = 2,
+            Some(ThingHappened::NextTurn) => ans[0] = 3,
+            Some(ThingHappened::LastTurn) => ans[0] = 4,
+            Some(ThingHappened::Rotate(piece_idx, r)) => {
                 ans[0] = 5;
                 ans[1] = (*piece_idx).try_into().expect("See above");
                 ans[2..6].copy_from_slice(&r.to_be_bytes());
             }
-            ThingHappened::Move(piece_idx, x, y) => {
+            Some(ThingHappened::Move(piece_idx, x, y)) => {
                 ans[0] = 6;
                 ans[1] = (*piece_idx).try_into().expect("See above");
                 ans[2..6].copy_from_slice(&x.to_be_bytes());
                 ans[6..10].copy_from_slice(&y.to_be_bytes());
             }
+            None => ans[0] = 7,
         }
         ans
     }
 
     /// Deserialize a Thing from a netcode byte buffer turn.
-    fn de_thing(thing: &[u8; TURN_SIZE]) -> ThingHappened {
+    fn de_thing(thing: &[u8; TURN_SIZE]) -> Option<ThingHappened> {
         match thing[0] {
-            1 => ThingHappened::FirstTurn,
-            2 => ThingHappened::PrevTurn,
-            3 => ThingHappened::NextTurn,
-            4 => ThingHappened::LastTurn,
+            1 => Some(ThingHappened::FirstTurn),
+            2 => Some(ThingHappened::PrevTurn),
+            3 => Some(ThingHappened::NextTurn),
+            4 => Some(ThingHappened::LastTurn),
             5 => {
                 let piece_idx = thing[1] as usize;
 
@@ -277,7 +300,7 @@ impl App {
                 r_bytes.copy_from_slice(&thing[2..6]);
                 let r = f32::from_be_bytes(r_bytes);
 
-                ThingHappened::Rotate(piece_idx, r)
+                Some(ThingHappened::Rotate(piece_idx, r))
             }
             6 => {
                 let piece_idx = thing[1] as usize;
@@ -290,8 +313,9 @@ impl App {
                 y_bytes.copy_from_slice(&thing[6..10]);
                 let y = f32::from_be_bytes(y_bytes);
 
-                ThingHappened::Move(piece_idx, x, y)
+                Some(ThingHappened::Move(piece_idx, x, y))
             }
+            7 => None,
             _ => panic!("Received malformed data from opponent."),
         }
     }
@@ -307,31 +331,36 @@ mod test_serde_thinghappened {
     ///
     /// Well, ThingHappened doesnt have PartialEq so I guess we're comparing
     /// the byte buffers.
-    fn assert_deser_bijective(thing: &ThingHappened) {
+    fn assert_deser_bijective(thing: Option<&ThingHappened>) {
         assert_eq!(
-            App::ser_thing(&App::de_thing(&App::ser_thing(thing))),
+            App::ser_thing(App::de_thing(&App::ser_thing(thing)).as_ref()),
             App::ser_thing(thing)
         )
     }
 
     #[test]
+    fn none_serialization_is_bijective() {
+        assert_deser_bijective(None);
+    }
+
+    #[test]
     fn firstturn_serialization_is_bijective() {
-        assert_deser_bijective(&ThingHappened::FirstTurn);
+        assert_deser_bijective(Some(&ThingHappened::FirstTurn));
     }
 
     #[test]
     fn prevturn_serialization_is_bijective() {
-        assert_deser_bijective(&ThingHappened::PrevTurn);
+        assert_deser_bijective(Some(&ThingHappened::PrevTurn));
     }
 
     #[test]
     fn nextturn_serialization_is_bijective() {
-        assert_deser_bijective(&ThingHappened::NextTurn);
+        assert_deser_bijective(Some(&ThingHappened::NextTurn));
     }
 
     #[test]
     fn lastturn_serialization_is_bijective() {
-        assert_deser_bijective(&ThingHappened::LastTurn);
+        assert_deser_bijective(Some(&ThingHappened::LastTurn));
     }
     #[parameterized(rotate_thing = {
         &ThingHappened::Rotate(2, 91.246876218913),
@@ -346,7 +375,7 @@ mod test_serde_thinghappened {
         &ThingHappened::Rotate(8, 82.152850235763),
     })]
     fn rotate_serialization_is_bijective(rotate_thing: &ThingHappened) {
-        assert_deser_bijective(rotate_thing);
+        assert_deser_bijective(Some(rotate_thing));
     }
 
     #[parameterized(move_thing = {
@@ -362,7 +391,7 @@ mod test_serde_thinghappened {
         &ThingHappened::Move(85, 38.747317527971, 20.528927188939),
     })]
     fn move_serialization_is_bijective(move_thing: &ThingHappened) {
-        assert_deser_bijective(move_thing);
+        assert_deser_bijective(Some(move_thing));
     }
 }
 
@@ -643,20 +672,30 @@ impl EventHandler for App {
     }
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult {
+        // don't use turn phase for this check, the turn phase can be Wait even though netcode
+        // isn't done yet (ie when it's my turn)
         if !self.netcode.my_turn()
             && let Ok(turn) = self.netcode.try_recv_turn()
         {
             match Self::de_thing(&turn) {
-                ThingHappened::FirstTurn => self.chess.handle_event(Event::FirstTurn),
-                ThingHappened::PrevTurn => self.chess.handle_event(Event::PrevTurn),
-                ThingHappened::NextTurn => self.chess.handle_event(Event::NextTurn),
-                ThingHappened::LastTurn => self.chess.handle_event(Event::LastTurn),
-                ThingHappened::Rotate(piece_idx, r) => self
-                    .chess
-                    .handle_event(Event::RotateUnchecked(piece_idx, r)),
-                ThingHappened::Move(piece_idx, x, y) => self
-                    .chess
-                    .handle_event(Event::MoveUnchecked(piece_idx, x, y)),
+                Some(ThingHappened::FirstTurn) => self.chess.handle_event(Event::FirstTurn),
+                Some(ThingHappened::PrevTurn) => self.chess.handle_event(Event::PrevTurn),
+                Some(ThingHappened::NextTurn) => self.chess.handle_event(Event::NextTurn),
+                Some(ThingHappened::LastTurn) => self.chess.handle_event(Event::LastTurn),
+                Some(ThingHappened::Rotate(piece_idx, r)) => {
+                    assert!(self.turn_phase == TurnPhase::Wait);
+                    self.turn_phase = TurnPhase::Move;
+                    self.chess
+                        .handle_event(Event::RotateUnchecked(piece_idx, r))
+                }
+                Some(ThingHappened::Move(piece_idx, x, y)) => {
+                    assert!(self.turn_phase == TurnPhase::Wait);
+                    self.chess
+                        .handle_event(Event::MoveUnchecked(piece_idx, x, y));
+                    self.netcode.send_turn(&Self::ser_thing(None));
+                    None
+                }
+                None => None,
             };
         }
         Ok(())
@@ -678,7 +717,6 @@ impl EventHandler for App {
             )?;
         }
 
-        // egui_macroquad::draw();
         self.draw_pieces((ctx, &mut canvas), selected.is_some())?;
 
         if let Some((_, travelpoints)) = selected {
