@@ -13,8 +13,8 @@ rand = "=0.9.1"
 [profile.dev]
 debug = false
 
-[profile.dev.package."*"]
-opt-level = 3
+# [profile.dev.package."*"]
+# opt-level = 3
 
 [dev-dependencies]
 parameterized = "2.0.0"
