@@ -266,6 +266,7 @@ impl App {
         show_hitcircles: bool,
     ) -> GameResult {
         let tile_size_px = self.runit_to_world_multiplier; // I did the math.
+        const SHRINK: f32 = 0.9;
         for piece in self.chess.pieces() {
             canvas.draw(
                 self.images
@@ -277,11 +278,11 @@ impl App {
                     .expect("Pieces should have correctly mapped to the file descrs."),
                 DrawParam::new()
                     .dest_rect(Rect {
-                        x: self.cnv_r(piece.x()),                   // x
-                        y: self.cnv_r(piece.y()),                   // y
-                        w: tile_size_px / PIECE_PNG_SIZE_PX as f32, // scale x multiplier
-                        h: tile_size_px / PIECE_PNG_SIZE_PX as f32, // scale y multiplier
-                                                                    // again, I did the math.
+                        x: self.cnv_r(piece.x()),                            // x
+                        y: self.cnv_r(piece.y()),                            // y
+                        w: tile_size_px / PIECE_PNG_SIZE_PX as f32 * SHRINK, // scale x multiplier
+                        h: tile_size_px / PIECE_PNG_SIZE_PX as f32 * SHRINK, // scale y multiplier
+                                                                             // again, I did the math.
                     })
                     .offset(Vec2::new(0.5, 0.5))
                     .rotation(TAU - piece.angle()),
