@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 ggez = { git = "https://github.com/ggez/ggez", rev = "9a4d240" }
-rotchess-core = { git = "https://github.com/wade-cheng/rotchess-core-rs", rev = "bd69570" }
+rotchess-core = { git = "https://github.com/wade-cheng/rotchess-core-rs", rev = "7317ac0b20457e5e27fa4d0521355cd4594cf54f" }
 sfn-tpn = "1.0"
 tokio = "1.46.1"
 rand = "=0.9.1"
@@ -15,3 +15,6 @@ debug = false
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[dev-dependencies]
+parameterized = "2.0.0"

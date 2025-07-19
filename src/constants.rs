@@ -25,3 +25,8 @@ pub const STARTING_WINDOW_SIZE: f32 = 800.;
 ///
 /// Yes, it's square.
 pub const PIECE_PNG_SIZE_PX: u32 = 200;
+
+/// Bytes that can represent a chess turn or ThingHappened.
+///
+/// Defined exactly as `1 + size_of::<u8>() + size_of::<f32>() + size_of::<f32>()`.
+pub const TURN_SIZE: usize = 1 + size_of::<u8>() + size_of::<f32>() + size_of::<f32>();

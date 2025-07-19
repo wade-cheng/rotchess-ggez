@@ -1725,7 +1725,7 @@ checksum = "b89c83349105e3732062a895becfc71a8f921bb71ecbbdd8ff99263e3b53a0ca"
 dependencies = [
  "bitflags 2.9.1",
  "gpu-descriptor-types",
- "hashbrown",
+ "hashbrown 0.15.4",
 ]
 
 [[package]]
@@ -1749,7 +1749,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "http 1.3.1",
- "indexmap",
+ "indexmap 2.10.0",
  "slab",
  "tokio",
  "tokio-util",
@@ -1775,6 +1775,12 @@ checksum = "b0c35f58762feb77d74ebe43bdbc3210f09be9fe6742234d573bacc26ed92b67"
 dependencies = [
  "byteorder",
 ]
+
+[[package]]
+name = "hashbrown"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
 
 [[package]]
 name = "hashbrown"
@@ -2209,12 +2215,22 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
+dependencies = [
+ "autocfg",
+ "hashbrown 0.12.3",
+]
+
+[[package]]
+name = "indexmap"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe4cd85333e22411419a0bcae1297d25e58c9443848b11dc6a86fefe8c78a661"
 dependencies = [
  "equivalent",
- "hashbrown",
+ "hashbrown 0.15.4",
 ]
 
 [[package]]
@@ -2732,7 +2748,7 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "227748d55f2f0ab4735d87fd623798cb6b664512fe979705f829c9f81c934465"
 dependencies = [
- "hashbrown",
+ "hashbrown 0.15.4",
 ]
 
 [[package]]
@@ -2974,9 +2990,9 @@ dependencies = [
  "cfg_aliases",
  "codespan-reporting",
  "half",
- "hashbrown",
+ "hashbrown 0.15.4",
  "hexf-parse",
- "indexmap",
+ "indexmap 2.10.0",
  "log",
  "num-traits",
  "once_cell",
@@ -3610,6 +3626,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22ec719bbf3b2a81c109a4e20b1f129b5566b7dce654bc3872f6a05abf82b2c4"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "parameterized"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "194bf497674dda552d4f1bd24d325f828f425876c9d522fcb1810cd527e0bd4e"
+dependencies = [
+ "parameterized-macro",
+]
+
+[[package]]
+name = "parameterized-macro"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1374bca5edab7a317c4ffbc9df1e239ceb7dcf5426b6b403474408442a9777ac"
+dependencies = [
+ "indexmap 1.9.3",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
 ]
 
 [[package]]
@@ -4380,13 +4417,14 @@ dependencies = [
 [[package]]
 name = "rotchess-core"
 version = "0.0.0-alpha"
-source = "git+https://github.com/wade-cheng/rotchess-core-rs?rev=bd69570#bd695708001e8ac36a4ba518374691f8eca5bc57"
+source = "git+https://github.com/wade-cheng/rotchess-core-rs?rev=7317ac0b20457e5e27fa4d0521355cd4594cf54f#7317ac0b20457e5e27fa4d0521355cd4594cf54f"
 
 [[package]]
 name = "rotchess-ggez"
 version = "0.0.0-alpha"
 dependencies = [
  "ggez",
+ "parameterized",
  "rand 0.9.1",
  "rotchess-core",
  "sfn-tpn",
@@ -5233,7 +5271,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "futures-util",
- "hashbrown",
+ "hashbrown 0.15.4",
  "pin-project-lite",
  "tokio",
 ]
@@ -5281,7 +5319,7 @@ version = "0.22.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
 dependencies = [
- "indexmap",
+ "indexmap 2.10.0",
  "toml_datetime",
  "winnow",
 ]
@@ -5828,7 +5866,7 @@ dependencies = [
  "bitflags 2.9.1",
  "cfg_aliases",
  "document-features",
- "hashbrown",
+ "hashbrown 0.15.4",
  "js-sys",
  "log",
  "naga",
@@ -5858,8 +5896,8 @@ dependencies = [
  "bitflags 2.9.1",
  "cfg_aliases",
  "document-features",
- "hashbrown",
- "indexmap",
+ "hashbrown 0.15.4",
+ "indexmap 2.10.0",
  "log",
  "naga",
  "once_cell",
@@ -5925,7 +5963,7 @@ dependencies = [
  "gpu-alloc",
  "gpu-allocator",
  "gpu-descriptor",
- "hashbrown",
+ "hashbrown 0.15.4",
  "js-sys",
  "khronos-egl",
  "libc",
@@ -6855,7 +6893,7 @@ dependencies = [
  "bzip2",
  "crc32fast",
  "flate2",
- "indexmap",
+ "indexmap 2.10.0",
  "memchr",
  "zstd",
 ]

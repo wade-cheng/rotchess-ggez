@@ -1,9 +1,13 @@
 //! An app that lets users play and see (update/draw) chess, computed with help from [`rotchess_core`] and macroquad.
 
-use std::{collections::HashMap, f32::consts::TAU, path::Path};
+use std::{
+    collections::HashMap,
+    f32::consts::{PI, TAU},
+    path::Path,
+};
 
 use ggez::{
-    Context, GameResult,
+    Context, GameError, GameResult,
     event::EventHandler,
     glam::Vec2,
     graphics::{Canvas, Color, DrawMode, DrawParam, Image, Mesh, MeshBuilder, Rect},
@@ -15,11 +19,69 @@ use ggez::{
 use rand::seq::SliceRandom;
 use rotchess_core::{
     RotchessEmulator,
-    emulator::{self, Event, TravelKind},
+    emulator::{self, Event, ThingHappened, TravelKind},
     piece::{PIECE_RADIUS, Piece, Pieces},
 };
+use sfn_tpn::{Config, NetcodeInterface};
+use tokio::sync::oneshot;
 
 use crate::constants::*;
+
+// TODO: pull this out into a sfn_tpn::get_netcode_interface_naive() or such.
+async fn get_netcode_interface() -> GameResult<NetcodeInterface<TURN_SIZE>> {
+    /// Return whether our process is a client.
+    ///
+    /// If not, we must be the server.
+    ///
+    /// Decides based on command line arguments. If no arguments
+    /// are supplied, we assume the user wants the process to be
+    /// a server.
+    fn is_client() -> GameResult<bool> {
+        let mut is_client = false;
+        let mut is_server = false;
+        for arg in std::env::args() {
+            if arg == "client" {
+                is_client = true;
+            }
+            if arg == "server" {
+                is_server = true;
+            }
+        }
+        if is_client && is_server {
+            Err(GameError::CustomError(
+                "This process cannot be both the client and the server.".to_string(),
+            ))
+        } else {
+            Ok(is_client)
+        }
+    }
+
+    /// Gets the first ticket string from the command line arguments.
+    fn ticket() -> GameResult<String> {
+        for arg in std::env::args() {
+            if let Some(("--ticket", t)) = arg.split_once("=") {
+                return Ok(t.to_string());
+            }
+        }
+
+        Err(GameError::CustomError(
+            "No ticket provided. Clients must provide a ticket to find a server.".to_string(),
+        ))
+    }
+
+    if is_client()? {
+        Ok(NetcodeInterface::new(Config::Ticket(ticket()?)))
+    } else {
+        let (send, recv) = oneshot::channel();
+        let net = NetcodeInterface::<TURN_SIZE>::new(Config::TicketSender(send));
+        println!(
+            "hosting game. another player may join with \n\n\
+            cargo run client --ticket={}",
+            recv.await.unwrap()
+        );
+        Ok(net)
+    }
+}
 
 enum ChessLayout {
     Standard,
@@ -44,6 +106,12 @@ impl ChessLayout {
 /// See [`App::load_images`], where they are canonically generated.
 type ImageID = String;
 
+enum TurnPhase {
+    Move,
+    Rotate,
+    Wait,
+}
+
 pub struct App {
     chess: RotchessEmulator,
     runit_to_world_multiplier: f32,
@@ -51,22 +119,32 @@ pub struct App {
     chess_layout: ChessLayout,
     /// ERM TODO I FORGOR IF THIS IS ROT UNITS OR PX UNITS. DOUBLE CHECK ON ME WHERE IM INSTANTIATED.
     mouse_pos: (f32, f32),
+    netcode: NetcodeInterface<TURN_SIZE>,
+    turn_phase: TurnPhase,
 }
 
 /// Misc utility functions
 impl App {
-    pub fn new(ctx: &mut Context) -> Self {
+    pub async fn new(ctx: &mut Context) -> GameResult<Self> {
         let mut s = Self {
             chess: RotchessEmulator::with(Pieces::standard_board()),
             runit_to_world_multiplier: 0.,
             images: Self::load_images(ctx),
             chess_layout: ChessLayout::Standard,
             mouse_pos: (0., 0.),
+            netcode: get_netcode_interface().await?,
+            turn_phase: TurnPhase::Wait,
+        };
+
+        s.turn_phase = if s.netcode.my_turn() {
+            TurnPhase::Move
+        } else {
+            TurnPhase::Wait
         };
 
         s.update_runit_to_world_multiplier(STARTING_WINDOW_SIZE, STARTING_WINDOW_SIZE);
 
-        s
+        Ok(s)
     }
 
     fn load_images(ctx: &mut Context) -> HashMap<ImageID, Image> {
@@ -119,6 +197,172 @@ impl App {
     /// Must be run after we update the ratio after any screen resize, lest the value be outdated.
     fn cnv_w(&self, a: f32) -> f32 {
         a / self.runit_to_world_multiplier
+    }
+}
+
+/// Netcode related stuff for our app.
+impl App {
+    /// Sends an event to our inner chess emulator, unless it is not our turn.
+    ///
+    /// If a thing happened under the hood, send it to the other player.
+    fn try_send_event(&mut self, e: Event) {
+        if self.netcode.my_turn()
+            && let Some(thing_happened) = self.chess.handle_event(e)
+        {
+            match thing_happened {
+                // if we rotated, use a quick little (evil) hack to deselect the piece
+                // that we're rotating. I, the dev of rotchess-core, know right button
+                // down can only select. so, we send a select click to narnia (-1000,-1000)
+                // Nothing should be selectable there, so we deselect.
+                ThingHappened::Rotate(_, _) => assert!(
+                    self.chess
+                        .handle_event(Event::ButtonDown {
+                            x: -1000.,
+                            y: -1000.,
+                            button: emulator::MouseButton::RIGHT,
+                        })
+                        .is_none(),
+                    "Nothing should have happened as detectable by the NothingHappened enum.",
+                ),
+
+                _ => (),
+            };
+            self.netcode.send_turn(&Self::ser_thing(&thing_happened));
+        }
+    }
+
+    // yes, we're doing these manually. huzzah!
+
+    /// Serialize a Thing into a netcode byte buffer turn.
+    fn ser_thing(thing: &ThingHappened) -> [u8; TURN_SIZE] {
+        // we really don't need to have
+        // a usize be the piece index, we don't have enough pieces on
+        // the board. a single u8 is enough. but for type convenience,
+        // we're leaving it as a usize. If someone manages to get
+        // more than 256 pieces on the board, that probably violates
+        // some invariant somewhere. (aren't pieces supposed to not
+        // stack?)
+        let mut ans = [0; TURN_SIZE];
+        match thing {
+            ThingHappened::FirstTurn => ans[0] = 1,
+            ThingHappened::PrevTurn => ans[0] = 2,
+            ThingHappened::NextTurn => ans[0] = 3,
+            ThingHappened::LastTurn => ans[0] = 4,
+            ThingHappened::Rotate(piece_idx, r) => {
+                ans[0] = 5;
+                ans[1] = (*piece_idx).try_into().expect("See above");
+                ans[2..6].copy_from_slice(&r.to_be_bytes());
+            }
+            ThingHappened::Move(piece_idx, x, y) => {
+                ans[0] = 6;
+                ans[1] = (*piece_idx).try_into().expect("See above");
+                ans[2..6].copy_from_slice(&x.to_be_bytes());
+                ans[6..10].copy_from_slice(&y.to_be_bytes());
+            }
+        }
+        ans
+    }
+
+    /// Deserialize a Thing from a netcode byte buffer turn.
+    fn de_thing(thing: &[u8; TURN_SIZE]) -> ThingHappened {
+        match thing[0] {
+            1 => ThingHappened::FirstTurn,
+            2 => ThingHappened::PrevTurn,
+            3 => ThingHappened::NextTurn,
+            4 => ThingHappened::LastTurn,
+            5 => {
+                let piece_idx = thing[1] as usize;
+
+                let mut r_bytes = [0; size_of::<f32>()];
+                r_bytes.copy_from_slice(&thing[2..6]);
+                let r = f32::from_be_bytes(r_bytes);
+
+                ThingHappened::Rotate(piece_idx, r)
+            }
+            6 => {
+                let piece_idx = thing[1] as usize;
+
+                let mut x_bytes = [0; size_of::<f32>()];
+                x_bytes.copy_from_slice(&thing[2..6]);
+                let x = f32::from_be_bytes(x_bytes);
+
+                let mut y_bytes = [0; size_of::<f32>()];
+                y_bytes.copy_from_slice(&thing[6..10]);
+                let y = f32::from_be_bytes(y_bytes);
+
+                ThingHappened::Move(piece_idx, x, y)
+            }
+            _ => panic!("Received malformed data from opponent."),
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_serde_thinghappened {
+    use super::App;
+    use parameterized::parameterized;
+    use rotchess_core::emulator::ThingHappened;
+
+    /// .
+    ///
+    /// Well, ThingHappened doesnt have PartialEq so I guess we're comparing
+    /// the byte buffers.
+    fn assert_deser_bijective(thing: &ThingHappened) {
+        assert_eq!(
+            App::ser_thing(&App::de_thing(&App::ser_thing(thing))),
+            App::ser_thing(thing)
+        )
+    }
+
+    #[test]
+    fn firstturn_serialization_is_bijective() {
+        assert_deser_bijective(&ThingHappened::FirstTurn);
+    }
+
+    #[test]
+    fn prevturn_serialization_is_bijective() {
+        assert_deser_bijective(&ThingHappened::PrevTurn);
+    }
+
+    #[test]
+    fn nextturn_serialization_is_bijective() {
+        assert_deser_bijective(&ThingHappened::NextTurn);
+    }
+
+    #[test]
+    fn lastturn_serialization_is_bijective() {
+        assert_deser_bijective(&ThingHappened::LastTurn);
+    }
+    #[parameterized(rotate_thing = {
+        &ThingHappened::Rotate(2, 91.246876218913),
+        &ThingHappened::Rotate(6, 01.797548620909),
+        &ThingHappened::Rotate(5, 08.147878140881),
+        &ThingHappened::Rotate(1, 21.581176862643),
+        &ThingHappened::Rotate(7, 32.217517844368),
+        &ThingHappened::Rotate(4, 90.522625314885),
+        &ThingHappened::Rotate(1, 23.927154940674),
+        &ThingHappened::Rotate(8, 53.959229741122),
+        &ThingHappened::Rotate(8, 60.743439712343),
+        &ThingHappened::Rotate(8, 82.152850235763),
+    })]
+    fn rotate_serialization_is_bijective(rotate_thing: &ThingHappened) {
+        assert_deser_bijective(rotate_thing);
+    }
+
+    #[parameterized(move_thing = {
+        &ThingHappened::Move(28, 11.352279394256, 81.647432982848),
+        &ThingHappened::Move(74, 30.000701136234, 90.218648211692),
+        &ThingHappened::Move(47, 56.161192888566, 02.448786090013),
+        &ThingHappened::Move(86, 54.106803274653, 61.299734032137),
+        &ThingHappened::Move(86, 28.528662175474, 48.520872175935),
+        &ThingHappened::Move(26, 66.300609468152, 85.435537391159),
+        &ThingHappened::Move(77, 73.688001636818, 68.715058900751),
+        &ThingHappened::Move(10, 68.328589705709, 11.444493994595),
+        &ThingHappened::Move(29, 65.925913814140, 87.078698941045),
+        &ThingHappened::Move(85, 38.747317527971, 20.528927188939),
+    })]
+    fn move_serialization_is_bijective(move_thing: &ThingHappened) {
+        assert_deser_bijective(move_thing);
     }
 }
 
@@ -268,6 +512,10 @@ impl App {
         let tile_size_px = self.runit_to_world_multiplier; // I did the math.
         const SHRINK: f32 = 0.9;
         for piece in self.chess.pieces() {
+            // if (piece.angle() % PI).abs() > 0.001 {
+            //     // println!("{}", (piece.angle() % PI).abs());
+            //     println!("piece angle is not up or down: {}", piece.angle());
+            // }
             canvas.draw(
                 self.images
                     .get(&format!(
@@ -307,16 +555,16 @@ impl EventHandler for App {
         match input.event.key_without_modifiers() {
             Key::Named(NamedKey::ArrowLeft) => {
                 if input.mods.shift_key() {
-                    self.chess.handle_event(Event::FirstTurn);
+                    self.try_send_event(Event::FirstTurn);
                 } else {
-                    self.chess.handle_event(Event::PrevTurn);
+                    self.try_send_event(Event::PrevTurn);
                 }
             }
             Key::Named(NamedKey::ArrowRight) => {
                 if input.mods.shift_key() {
-                    self.chess.handle_event(Event::LastTurn);
+                    self.try_send_event(Event::LastTurn);
                 } else {
-                    self.chess.handle_event(Event::NextTurn);
+                    self.try_send_event(Event::NextTurn);
                 }
             }
             Key::Character(c) => match c.as_str() {
@@ -352,7 +600,7 @@ impl EventHandler for App {
             _ => None,
         } {
             let (x, y) = (self.cnv_w(x), self.cnv_w(y));
-            self.chess.handle_event(Event::ButtonDown { x, y, button });
+            self.try_send_event(Event::ButtonDown { x, y, button });
         }
         Ok(())
     }
@@ -370,7 +618,7 @@ impl EventHandler for App {
             _ => None,
         } {
             let (x, y) = (self.cnv_w(x), self.cnv_w(y));
-            self.chess.handle_event(Event::ButtonUp { x, y, button });
+            self.try_send_event(Event::ButtonUp { x, y, button });
         }
         Ok(())
     }
@@ -385,7 +633,7 @@ impl EventHandler for App {
     ) -> GameResult {
         let (x, y) = (self.cnv_w(x), self.cnv_w(y));
         self.mouse_pos = (x, y);
-        self.chess.handle_event(Event::MouseMotion { x, y });
+        self.try_send_event(Event::MouseMotion { x, y });
         Ok(())
     }
 
@@ -395,6 +643,22 @@ impl EventHandler for App {
     }
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult {
+        if !self.netcode.my_turn()
+            && let Ok(turn) = self.netcode.try_recv_turn()
+        {
+            match Self::de_thing(&turn) {
+                ThingHappened::FirstTurn => self.chess.handle_event(Event::FirstTurn),
+                ThingHappened::PrevTurn => self.chess.handle_event(Event::PrevTurn),
+                ThingHappened::NextTurn => self.chess.handle_event(Event::NextTurn),
+                ThingHappened::LastTurn => self.chess.handle_event(Event::LastTurn),
+                ThingHappened::Rotate(piece_idx, r) => self
+                    .chess
+                    .handle_event(Event::RotateUnchecked(piece_idx, r)),
+                ThingHappened::Move(piece_idx, x, y) => self
+                    .chess
+                    .handle_event(Event::MoveUnchecked(piece_idx, x, y)),
+            };
+        }
         Ok(())
     }
 
