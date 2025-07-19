@@ -2,6 +2,16 @@
 
 use std::{collections::HashMap, f32::consts::TAU, path::Path};
 
+use ggez::{
+    Context, GameResult,
+    event::EventHandler,
+    glam::Vec2,
+    graphics::{Canvas, Color, DrawMode, DrawParam, Image, Mesh, MeshBuilder, Rect},
+    winit::{
+        keyboard::{Key, NamedKey},
+        platform::modifier_supplement::KeyEventExtModifierSupplement,
+    },
+};
 use rand::seq::SliceRandom;
 use rotchess_core::{
     RotchessEmulator,
@@ -9,31 +19,7 @@ use rotchess_core::{
     piece::{PIECE_RADIUS, Piece, Pieces},
 };
 
-// TODO: these consts should be moved into meshandler i think
-const DARK_TILE_COLOR: Color = Color::new(0.70980, 0.53333, 0.38824, 1.00000);
-const LIGHT_TILE_COLOR: Color = Color::new(0.94118, 0.85098, 0.70980, 1.00000);
-const BACKGROUND_COLOR: Color = Color::new(0.90196, 0.90196, 0.90196, 1.00000);
-
-/// yellowish
-const SELECTED_PIECE_COLOR: Color = Color::new(1.00000, 1.00000, 0.60000, 0.78431);
-/// cyanish
-const MOVE_OUTLINE_COLOR: Color = Color::new(0.67843, 1.00000, 0.95686, 1.00000);
-const MOVE_HIGHLIGHT_COLOR: Color = Color::new(0.67843, 1.00000, 0.95686, 0.78431);
-/// red
-const CAPTURE_OUTLINE_COLOR: Color = Color::new(1.00000, 0.00000, 0.00000, 1.00000);
-const CAPTURE_HIGHLIGHT_COLOR: Color = Color::new(1.00000, 0.00000, 0.00000, 0.78431);
-/// springgreen
-const HITCIRCLE_COLOR: Color = Color::new(0.00000, 1.00000, 0.49804, 1.00000);
-
-use ggez::{
-    Context, GameResult,
-    event::EventHandler,
-    graphics::{Canvas, Color, Image, Mesh},
-    winit::{
-        keyboard::{Key, NamedKey},
-        platform::modifier_supplement::KeyEventExtModifierSupplement,
-    },
-};
+use crate::constants::*;
 
 enum ChessLayout {
     Standard,
@@ -58,28 +44,21 @@ impl ChessLayout {
 /// See [`App::load_images`], where they are canonically generated.
 type ImageID = String;
 
-/// The things that must be drawn every frame.
-struct World {
-    pieces: Vec<(ImageID, f32, f32)>,
-    board: Mesh,
-}
-
 pub struct App {
     chess: RotchessEmulator,
     runit_to_world_multiplier: f32,
     images: HashMap<ImageID, Image>,
-    world: World,
     chess_layout: ChessLayout,
     mouse_pos: (f32, f32),
 }
 
 /// Misc utility functions
 impl App {
-    pub fn new() -> Self {
+    pub fn new(ctx: &mut Context) -> Self {
         Self {
             chess: RotchessEmulator::with(Pieces::standard_board()),
             runit_to_world_multiplier: 0.,
-            world: World { images: None },
+            images: Self::load_images(ctx),
             chess_layout: ChessLayout::Standard,
             mouse_pos: (0., 0.),
         }
@@ -140,8 +119,13 @@ impl App {
         images
     }
 
-    fn draw_board(&self, ctxcnvs: (&mut Context, &mut Canvas)) {
-        draw_rectangle(0., 0., self.cnv_r(8.), self.cnv_r(8.), LIGHT_TILE_COLOR);
+    fn draw_board(&self, (ctx, canvas): (&mut Context, &mut Canvas)) -> GameResult {
+        let mut mb = MeshBuilder::new();
+        mb.rectangle(
+            DrawMode::fill(),
+            Rect::new_i32(0, 0, 8, 8),
+            LIGHT_TILE_COLOR,
+        )?;
 
         let mut top = 0;
         let mut left = 1;
@@ -151,13 +135,11 @@ impl App {
         const NUM_DARK_TILES: u8 = NUM_TILES / 2;
 
         for _ in 0..NUM_DARK_TILES {
-            draw_rectangle(
-                self.cnv_r(left as f32),
-                self.cnv_r(top as f32),
-                self.cnv_r(1.),
-                self.cnv_r(1.),
+            mb.rectangle(
+                DrawMode::fill(),
+                Rect::new_i32(left, top, 1, 1),
                 DARK_TILE_COLOR,
-            );
+            )?;
 
             left += 2;
             if left >= 8 {
@@ -166,82 +148,120 @@ impl App {
                 top += 1;
             }
         }
+
+        // TODO: creating new board mesh every frame.
+        let board_mesh = Mesh::from_data(ctx, mb.build());
+        canvas.draw(&board_mesh, Vec2::ZERO);
+
+        Ok(())
     }
 
     fn draw_piece_outline(
         &self,
-        ctxcnvs: (&mut Context, &mut Canvas),
+        (ctx, canvas): (&mut Context, &mut Canvas),
         x: f32,
         y: f32,
         color: Color,
-    ) {
-        draw_circle_lines(
-            self.cnv_r(x),
-            self.cnv_r(y),
-            self.cnv_r(PIECE_RADIUS),
-            1.,
-            color,
+    ) -> GameResult {
+        canvas.draw(
+            &Mesh::new_circle(
+                ctx,
+                DrawMode::stroke(1.),
+                Vec2::ZERO,
+                self.cnv_r(PIECE_RADIUS),
+                CIRC_TOLERANCE,
+                color,
+            )?,
+            Vec2::new(self.cnv_r(x), self.cnv_r(y)),
         );
+        Ok(())
     }
 
     fn draw_piece_highlight(
         &self,
-        ctxcnvs: (&mut Context, &mut Canvas),
+        (ctx, canvas): (&mut Context, &mut Canvas),
         x: f32,
         y: f32,
         color: Color,
-    ) {
+    ) -> GameResult {
         /// Extra addition to the radius of the drawn circle.
         ///
         /// When highlighting a piece, there will be an outline over it. Without
         /// extra tolerance, there will be background poking in between the highlight
         /// and outline.
         const TOLERANCE: f32 = 0.5;
-        draw_circle(
-            self.cnv_r(x),
-            self.cnv_r(y),
-            self.cnv_r(PIECE_RADIUS) + TOLERANCE,
-            color,
+
+        canvas.draw(
+            &Mesh::new_circle(
+                ctx,
+                DrawMode::fill(),
+                Vec2::ZERO,
+                self.cnv_r(PIECE_RADIUS) + TOLERANCE,
+                CIRC_TOLERANCE,
+                color,
+            )?,
+            Vec2::new(self.cnv_r(x), self.cnv_r(y)),
         );
+        Ok(())
     }
 
-    fn draw_movablepoint_indicator(&self, ctxcnvs: (&mut Context, &mut Canvas), x: f32, y: f32) {
-        draw_circle(
-            self.cnv_r(x),
-            self.cnv_r(y),
-            self.cnv_r(0.12),
-            MOVE_HIGHLIGHT_COLOR,
+    fn draw_movablepoint_indicator(
+        &self,
+        (ctx, canvas): (&mut Context, &mut Canvas),
+        x: f32,
+        y: f32,
+    ) -> GameResult {
+        canvas.draw(
+            &Mesh::new_circle(
+                ctx,
+                DrawMode::fill(),
+                Vec2::ZERO,
+                self.cnv_r(0.12),
+                CIRC_TOLERANCE,
+                MOVE_HIGHLIGHT_COLOR,
+            )?,
+            Vec2::new(self.cnv_r(x), self.cnv_r(y)),
         );
+        Ok(())
     }
 
-    fn draw_capturablepoint_indicator(&self, ctxcnvs: (&mut Context, &mut Canvas), x: f32, y: f32) {
+    fn draw_capturablepoint_indicator(
+        &self,
+        (ctx, canvas): (&mut Context, &mut Canvas),
+        x: f32,
+        y: f32,
+    ) -> GameResult {
         let x = self.cnv_r(x);
         let y = self.cnv_r(y);
         let dist = self.cnv_r(0.12);
-        // draw_circle(x, y, 5., MOVE_HIGHLIGHT_COLOR);
 
-        draw_triangle(
-            // Vec2 { x, y },
-            // Vec2 { x: x + DIST, y },
-            // Vec2 { x, y: y - DIST },
-            Vec2 { x, y: y - dist },
-            Vec2 {
-                x: x - dist / 2. * f32::sqrt(3.),
-                y: y + dist / 2.,
-            },
-            Vec2 {
-                x: x + dist / 2. * f32::sqrt(3.),
-                y: y + dist / 2.,
-            },
-            CAPTURE_HIGHLIGHT_COLOR,
+        canvas.draw(
+            // TODO: this func wants the points ordered clockwise, but which way that is depends if we go
+            // off math (y up) or our eyes (y down)
+            &Mesh::new_polygon(
+                ctx,
+                DrawMode::fill(),
+                &[
+                    Vec2::new(0., -dist),
+                    Vec2::new(x - dist / 2. * f32::sqrt(3.), dist / 2.),
+                    Vec2::new(x + dist / 2. * f32::sqrt(3.), y + dist / 2.),
+                ],
+                CAPTURE_HIGHLIGHT_COLOR,
+            )?,
+            Vec2::new(self.cnv_r(x), self.cnv_r(y)),
         );
+        Ok(())
     }
 
-    fn draw_pieces(&self, ctxcnvs: (&mut Context, &mut Canvas), show_hitcircles: bool) {
+    fn draw_pieces(
+        &self,
+        (ctx, canvas): (&mut Context, &mut Canvas),
+        show_hitcircles: bool,
+    ) -> GameResult {
         /// Size as fraction of 1.
         const PIECE_SIZE: f32 = 0.9;
         for piece in self.chess.pieces() {
-            draw_texture_ex(
+            canvas.draw(
                 self.images
                     .get(&format!(
                         "piece_{}{}1",
@@ -249,23 +269,22 @@ impl App {
                         piece.side().to_file_desc()
                     ))
                     .expect("Pieces should have correctly mapped to the file descrs."),
-                self.cnv_r(piece.x() - PIECE_SIZE / 2.),
-                self.cnv_r(piece.y() - PIECE_SIZE / 2.),
-                WHITE,
-                DrawTextureParams {
-                    dest_size: Some(Vec2 {
-                        x: self.cnv_r(PIECE_SIZE),
-                        y: self.cnv_r(PIECE_SIZE),
-                    }),
-                    rotation: TAU - piece.angle(),
-                    ..Default::default()
-                },
+                DrawParam::new()
+                    .dest_rect(Rect {
+                        x: self.cnv_r(piece.x() - PIECE_SIZE / 2.),
+                        y: self.cnv_r(piece.y() - PIECE_SIZE / 2.),
+                        w: self.cnv_r(piece.x() - PIECE_SIZE / 2.),
+                        h: self.cnv_r(piece.y() - PIECE_SIZE / 2.),
+                    })
+                    // .offset(Vec2::new(0.5, 0.5))
+                    .rotation(TAU - piece.angle()),
             );
 
             if show_hitcircles {
-                self.draw_piece_outline(piece.x(), piece.y(), HITCIRCLE_COLOR);
+                self.draw_piece_outline((ctx, canvas), piece.x(), piece.y(), HITCIRCLE_COLOR)?;
             }
         }
+        Ok(())
     }
 }
 
@@ -373,7 +392,7 @@ impl EventHandler for App {
     fn draw(&mut self, ctx: &mut Context) -> GameResult {
         let mut canvas = Canvas::from_frame(ctx, BACKGROUND_COLOR);
 
-        self.draw_board((ctx, &mut canvas));
+        self.draw_board((ctx, &mut canvas))?;
 
         let selected = self.chess.selected();
 
@@ -383,11 +402,11 @@ impl EventHandler for App {
                 piece.x(),
                 piece.y(),
                 SELECTED_PIECE_COLOR,
-            );
+            )?;
         }
 
         // egui_macroquad::draw();
-        self.draw_pieces((ctx, &mut canvas), selected.is_some());
+        self.draw_pieces((ctx, &mut canvas), selected.is_some())?;
 
         if let Some((_, travelpoints)) = selected {
             for tp in travelpoints {
@@ -402,14 +421,14 @@ impl EventHandler for App {
                                 TravelKind::Capture => CAPTURE_HIGHLIGHT_COLOR,
                                 TravelKind::Move => MOVE_HIGHLIGHT_COLOR,
                             },
-                        );
+                        )?;
                     } else {
                         match tp.kind {
                             TravelKind::Capture => {
-                                self.draw_capturablepoint_indicator((ctx, &mut canvas), tp.x, tp.y)
+                                self.draw_capturablepoint_indicator((ctx, &mut canvas), tp.x, tp.y)?
                             }
                             TravelKind::Move => {
-                                self.draw_movablepoint_indicator((ctx, &mut canvas), tp.x, tp.y)
+                                self.draw_movablepoint_indicator((ctx, &mut canvas), tp.x, tp.y)?
                             }
                         }
                     }
@@ -422,7 +441,7 @@ impl EventHandler for App {
                         TravelKind::Capture => CAPTURE_OUTLINE_COLOR,
                         TravelKind::Move => MOVE_OUTLINE_COLOR,
                     },
-                );
+                )?;
             }
         }
         canvas.finish(ctx)

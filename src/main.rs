@@ -18,7 +18,7 @@ pub async fn main() -> GameResult {
 
     let (mut ctx, event_loop) = cb.build()?;
 
-    let state = App::new().await?;
+    let state = App::new(&mut ctx);
 
     event::run(ctx, event_loop, state)
 }
