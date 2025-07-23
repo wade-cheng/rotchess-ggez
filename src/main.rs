@@ -22,9 +22,7 @@ pub async fn main() -> GameResult {
         );
 
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let mut path = PathBuf::from(manifest_dir);
-        path.push("resources");
-        cb = cb.add_resource_path(path);
+        cb = cb.add_resource_path(PathBuf::from(manifest_dir).join("resources"));
     }
 
     let (mut ctx, event_loop) = cb.build()?;
